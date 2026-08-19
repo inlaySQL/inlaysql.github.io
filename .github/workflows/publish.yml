@@ -1,0 +1,118 @@
+name: Publish
+
+# The page at https://inlaysql.github.io is built from the engine's own source
+# on every run, never from a copy committed here.
+#
+# That is the whole design of this repository. The page embeds a live demo: it
+# compiles InlaySQL to WebAssembly and runs real queries in the visitor's tab.
+# A vendored `pkg/` would have made this repo simpler and the demo a lie the
+# moment the engine changed underneath it — the page would keep answering from
+# a build nobody could date. So there are no engine artifacts here at all; this
+# job checks out `inlaySQL/inlaysql`, builds the module the same way that
+# repository's own `wasm.yml` does, and deploys the result.
+#
+# It follows `main`, so a change to the engine or to `www/index.html` is on the
+# site within a run. `schedule` is the safety net for the case where this
+# repository is untouched for a long time and nothing else would trigger it.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so the published page cannot silently fall behind `main` for
+    # longer than that even if nobody pushes here.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+# Never let two deploys race: the later one should win cleanly rather than
+# interleave with a half-finished upload.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: build the page from source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The engine, not this repository, is what the page is made of. Public
+      # repository, so the default token is enough and no PAT is involved.
+      - name: Check out the engine
+        uses: actions/checkout@v5
+        with:
+          repository: inlaySQL/inlaysql
+          ref: main
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      # The `wasm-bindgen` CLI has to match the crate version exactly or the
+      # generated glue does not match the module, so the version is read out of
+      # Cargo.lock rather than written down twice. Same approach the engine
+      # repository's `wasm.yml` uses, for the same reason.
+      - name: Install wasm-bindgen-cli
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/,""); print $3; exit}' Cargo.lock)"
+          echo "wasm-bindgen $version"
+          url="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
+          if curl --proto '=https' --tlsv1.2 -sSfL "$url" | tar -xz --strip-components=1 -C /usr/local/bin \
+               "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"; then
+            echo "installed the prebuilt binary"
+          else
+            echo "no prebuilt binary for $version; building from source"
+            cargo install wasm-bindgen-cli --version "$version" --locked
+          fi
+          wasm-bindgen --version
+
+      - name: Build the browser bundle
+        run: ./crates/inlaysql-wasm/build.sh
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      # The page is worth nothing if its demo is broken, and a broken demo is
+      # not something to learn from a visitor. This is the same smoke test the
+      # engine repository runs: it drives a real browser through hybrid search,
+      # arbitrary SQL and an OPFS save/reload. A failure here stops the deploy.
+      - name: The demo works in a real browser
+        working-directory: crates/inlaysql-wasm/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run smoke
+
+      - name: Package the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/inlaysql-wasm/www
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
