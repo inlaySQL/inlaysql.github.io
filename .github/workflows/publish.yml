@@ -19,9 +19,17 @@ on:
   push:
     branches: [main]
   schedule:
-    # Weekly, so the published page cannot silently fall behind `main` for
-    # longer than that even if nobody pushes here.
-    - cron: "17 6 * * 1"
+    # Daily, so the published page cannot silently fall behind the engine's
+    # `main` for longer than that even if nobody pushes here. The honest gap
+    # in this design: this file has no trigger that fires when the *engine*
+    # repository pushes — cross-repo triggering needs a PAT (or a GitHub
+    # App) that neither repository holds today, so engine commits reach the
+    # site on this cron, not immediately. `workflow_dispatch` covers the
+    # in-between case: run this workflow by hand after a change that should
+    # ship now. If a PAT ever lands in the engine repo as a secret, add a
+    # `repository_dispatch` trigger here and a one-step dispatch job there,
+    # and delete this paragraph.
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 # Never let two deploys race: the later one should win cleanly rather than
