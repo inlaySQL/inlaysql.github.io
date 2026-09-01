@@ -92,6 +92,24 @@ jobs:
       - name: Build the browser bundle
         run: ./crates/inlaysql-wasm/build.sh
 
+      # The JS SDK demo (www/demo/js-sdk) stages the SDK's own source files,
+      # which live in a second repository. The engine's build.sh copies the
+      # HTML and the engine module; this step supplies the SDK sources, so
+      # the published page runs the same files the npm packages ship.
+      - name: Check out the JS SDK
+        uses: actions/checkout@v5
+        with:
+          repository: inlaySQL/inlaysql-js
+          ref: main
+          path: sdk-repo
+
+      - name: Stage the SDK sources into the demo
+        run: |
+          for pkg in wasm core orm storage simple; do
+            mkdir -p crates/inlaysql-wasm/www/demo/js-sdk/packages/$pkg
+            cp -R sdk-repo/packages/$pkg/src crates/inlaysql-wasm/www/demo/js-sdk/packages/$pkg/src
+          done
+
       - uses: actions/setup-node@v5
         with:
           node-version: 20
